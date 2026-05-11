@@ -11,8 +11,10 @@ using namespace std::literals;
 using namespace std::literals::string_view_literals; // Используем литералы для строк, чтобы можно было писать "Hello"s вместо std::string("Hello")
 
 int main() {
+    // Устанавливаем порт, на котором сервер будет слушать входящие соединения.
     static const int port = 3333;
 
+    // Создаем объект io_context, который является центральным элементом для управления асинхронными операциями ввода-вывода.
     net::io_context io_context;
 
     // Создаем объект acceptor, который будет слушать входящие соединения на указанном порту.
@@ -23,8 +25,6 @@ int main() {
     // (используем конструктор tcp::v4 по умолчанию для адреса 0.0.0.0)
     tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), port));
     std::cout << "Waiting for connection..."sv << std::endl;
-
-    // int main()
 
     // Объект для хранения кода ошибки, который может возникнуть при работе с сокетом
     boost::system::error_code ec;
