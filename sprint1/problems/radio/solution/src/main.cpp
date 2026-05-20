@@ -50,25 +50,29 @@ void PrintBadArgsMessage(const char *taskName){
 
 void StartServer(uint16_t port) {
     try {
+        // Создаём io_context, который необходим для работы с сокетами
         boost::asio::io_context io_context;
 
+        // Открываем сокет для приёма данных. Указываем протокол (IPv4) и порт, на котором будет работать сервер
         udp::socket socket(io_context, udp::endpoint(udp::v4(), port));
 
+        // Создаём объект Player для воспроизведения звука. Указываем формат семплов и количество каналов (моно).
         Player player(ma_format_u8, 1);
 
         // Создаём буфер достаточного размера, чтобы вместить датаграмму.
         std::array<char, max_buffer_size> recv_buf;
 
+        // Endpoint для хранения адреса клиента, от которого пришло сообщение
+        udp::endpoint remote_endpoint;
+
         // Запускаем сервер в цикле, чтобы можно было работать со многими клиентами
         for (;;) {
             // Получаем не только данные, но и endpoint клиента
             // size - размер полученных данных. Количество фрэймов может быть другим
-            auto datagram_size = socket.receive(boost::asio::buffer(recv_buf));
+            auto datagram_size = socket.receive_from(boost::asio::buffer(recv_buf), remote_endpoint);
 
-            
-
-            int frame_size = player.GetFrameSize();
-            size_t n_frames = datagram_size / frame_size;
+            int frame_size = player.GetFrameSize(); // Размер одного фрейма в байтах
+            size_t n_frames = datagram_size / frame_size; // Количество фреймов в полученной датаграмме
 
             // Воспроизводим принятые данные
             player.PlayBuffer(recv_buf.data(), n_frames, 1.5s);
@@ -76,47 +80,60 @@ void StartServer(uint16_t port) {
         }
     }
     catch (std::exception &e) {
-        std::cerr << e.what() << std::endl;
+        std::cerr << "Server exception: " << e.what() << std::endl;
     }
 }
 
 void StartClient(uint16_t port) {
-    // По заданию через аргументы передаётся только порт. Прописываем IP сервера прямо в коде
-    // Использую localhost для тестирования локально и чтобы не светить IP на GitHub
-    static const char server_IP[] = "localhost";
-
-    Recorder recorder(ma_format_u8, 1);
-    std::string str; // Промежуточная строка для получения ввода от пользователя
-    std::cout << "Press Enter to record message..." << std::endl;
-    std::getline(std::cin, str);
-
-    // Производим запись в rec_result
-    auto rec_result = recorder.Record(max_n_frames, 1.5s);
-    std::cout << "Recording done" << std::endl;
-
-    int frame_size = recorder.GetFrameSize();
-    size_t n_frames = rec_result.frames;
-    size_t datagram_size = frame_size * n_frames;
-
-    if (datagram_size > max_buffer_size) {
-        std::cout << "Can't send datagram: size record" << datagram_size << " grater then max buffer size " << max_buffer_size << std::endl;
-        return;
-    }
-
-    // Отправляем данные на сервер
     try {
+        // По заданию через аргументы передаётся только порт. Прописываем IP сервера прямо в коде
+        // Использую localhost для тестирования локально и чтобы не светить IP на GitHub
+        static const char server_IP[] = "localhost";
+
         net::io_context io_context;
 
         // Перед отправкой данных нужно открыть сокет.
         // При открытии указываем протокол (IPv4 или IPv6) вместо endpoint.
         udp::socket socket(io_context, udp::v4());
 
-        boost::system::error_code ec;
-        auto endpoint = udp::endpoint(net::ip::make_address(server_IP, ec), port);
-        socket.send_to(net::buffer(rec_result.data, datagram_size), endpoint);
+        Recorder recorder(ma_format_u8, 1);
+        
+
+        while (true)
+        {
+            std::string server_ip;
+            std::cout << "Enter server IP address: ";
+            std::getline(std::cin, server_ip);
+
+            // Промежуточная строка для получения ввода от пользователя
+            std::string str; 
+            std::cout << "Press Enter to record message..." << std::endl;
+            std::getline(std::cin, str);
+
+            // Производим запись в rec_result
+            auto rec_result = recorder.Record(max_n_frames, 1.5s);
+            std::cout << "Recording done, " << rec_result.frames << " frames recorded" << std::endl;
+
+            // Вычисляем количество байт для отправки
+            int frame_size = recorder.GetFrameSize(); // Размер одного фрейма в байтах
+            size_t n_frames = rec_result.frames; // Количество фреймов, полученное от рекордера
+            size_t datagram_size = frame_size * n_frames; // Количество байт для отправки
+
+            if (datagram_size > max_buffer_size) {
+                std::cout << "Can't send datagram: size record" << datagram_size << " grater then max buffer size " << max_buffer_size << std::endl;
+                return;
+            }
+
+            // Отправляем данные на сервер
+            boost::system::error_code ec;
+            auto endpoint = udp::endpoint(net::ip::make_address(server_ip, ec), port);
+            socket.send_to(net::buffer(rec_result.data, datagram_size), endpoint);
+
+            std::cout << "Sent " << datagram_size << " bytes to " << server_ip << std::endl;
+        }
     }
     catch (std::exception &e) {
-        std::cerr << e.what() << std::endl;
+        std::cerr << "Client exception: " << e.what() << std::endl;
     }
 }
 
