@@ -88,7 +88,7 @@ void StartClient(uint16_t port) {
     try {
         // По заданию через аргументы передаётся только порт. Прописываем IP сервера прямо в коде
         // Использую localhost для тестирования локально и чтобы не светить IP на GitHub
-        static const char server_IP[] = "localhost";
+        //static const char server_IP[] = "localhost";
 
         net::io_context io_context;
 
@@ -121,12 +121,20 @@ void StartClient(uint16_t port) {
 
             if (datagram_size > max_buffer_size) {
                 std::cout << "Can't send datagram: size record" << datagram_size << " grater then max buffer size " << max_buffer_size << std::endl;
-                return;
+                continue;
             }
 
             // Отправляем данные на сервер
             boost::system::error_code ec;
-            auto endpoint = udp::endpoint(net::ip::make_address(server_ip, ec), port);
+
+            auto address = net::ip::make_address(server_ip, ec);
+            if (ec) {
+                std::cout << "Invalid IP address: " << server_ip 
+                        << " (" << ec.message() << ")" << std::endl;
+                continue;  // переходим к следующей итерации, а не падаем
+            }
+            auto endpoint = udp::endpoint(address, port);
+            
             socket.send_to(net::buffer(rec_result.data, datagram_size), endpoint);
 
             std::cout << "Sent " << datagram_size << " bytes to " << server_ip << std::endl;
@@ -156,6 +164,11 @@ int main(int argc, char **argv) {
     int port = -1;
     try {
         port = std::stoi(std::string(argv[2]));
+        
+        if (port < 1 || port > 65535) {
+            std::cout << "Port must be in range 1..65535" << std::endl;
+            return 1;
+        }
     }
     catch (std::exception &e) {
         std::cerr << e.what() << std::endl;
