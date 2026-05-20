@@ -30,127 +30,129 @@
 
 #include "audio.h"
 #include <boost/asio.hpp>
+
 #include <iostream>
-#include <string>
-#include <thread>
+
+namespace net = boost::asio;
+using net::ip::udp;
 
 using namespace std::literals;
-namespace net = boost::asio; // Сокращение для удобства использования классов из boost::asio
-using boost::asio::ip::udp; // Сокращение для удобства использования классов из boost::asio::ip::udp
+
+// Максимальное количество фрэймов
+static const int max_n_frames = 65000;
+// Максимальный размер буфера в байтах
+static const size_t max_buffer_size = 65000;
+
+void PrintBadArgsMessage(const char *taskName){
+    std::cout << "Usage: "sv << taskName << " server|client"sv
+              << " <connection port>"sv << std::endl;
+}
 
 void StartServer(uint16_t port) {
     try {
-        // Контекст ввода-вывода для работы с сетью
-        net::io_context io_context; 
-        
-        // Создаём UDP сокет и привязываем его к указанному порту
+        boost::asio::io_context io_context;
+
         udp::socket socket(io_context, udp::endpoint(udp::v4(), port));
-        
-        // Инициализируем аудио плеер для воспроизведения полученных данных
+
         Player player(ma_format_u8, 1);
-        
-        // Буфер для хранения полученных данных. Размер 65000 байт соответствует максимальному количеству фреймов,
-        // которые мы будем обрабатывать за один раз
-        std::vector<char> buffer(65000);
-        
-        std::cout << "Server listening on port " << port << std::endl;
-        
-        while (true) {
-            udp::endpoint remote_endpoint; // Endpoint для хранения информации о клиенте, от которого пришло сообщение
-            boost::system::error_code error;
+
+        // Создаём буфер достаточного размера, чтобы вместить датаграмму.
+        std::array<char, max_buffer_size> recv_buf;
+
+        // Запускаем сервер в цикле, чтобы можно было работать со многими клиентами
+        for (;;) {
+            // Получаем не только данные, но и endpoint клиента
+            // size - размер полученных данных. Количество фрэймов может быть другим
+            auto datagram_size = socket.receive(boost::asio::buffer(recv_buf));
+
             
-            // Получаем данные от клиента. Метод receive_from заполняет buffer данными и remote_endpoint информацией о клиенте
-            size_t length = socket.receive_from(net::buffer(buffer), remote_endpoint);
-            
-            // Проверяем наличие ошибок при получении данных
-            if (error && error != net::error::message_size) {
-                throw boost::system::system_error(error);
-            }
-            
-            // Вычисляем количество фреймов. Длина полученного сообщения (в байтах) делится на размер одного фрейма,
-            // который мы получаем от метода GetFrameSize() класса Player.
-            size_t frames = length / player.GetFrameSize();
-            
-            std::cout << "Received " << length << " bytes (" << frames << " frames) from " 
-                      << remote_endpoint.address().to_string() << std::endl;
-            
-            // Воспроизводим звук. Метод PlayBuffer принимает указатель на данные, количество фреймов и время воспроизведения.
-            player.PlayBuffer(buffer.data(), frames, 1.5s);
+
+            int frame_size = player.GetFrameSize();
+            size_t n_frames = datagram_size / frame_size;
+
+            // Воспроизводим принятые данные
+            player.PlayBuffer(recv_buf.data(), n_frames, 1.5s);
             std::cout << "Playing done" << std::endl;
         }
     }
-    catch (std::exception& e) {
-        std::cerr << "Server exception: " << e.what() << std::endl;
+    catch (std::exception &e) {
+        std::cerr << e.what() << std::endl;
     }
 }
 
 void StartClient(uint16_t port) {
-    try {
+    // По заданию через аргументы передаётся только порт. Прописываем IP сервера прямо в коде
+    // Использую localhost для тестирования локально и чтобы не светить IP на GitHub
+    static const char server_IP[] = "localhost";
 
-        // Контекст ввода-вывода для работы с сетью
-        net::io_context io_context;
-        
-        
-        // Создаём UDP сокет для отправки данных. Мы не привязываем его к конкретному порту, 
-        // так как клиент будет использовать любой доступный порт для отправки сообщений.
-        udp::socket socket(io_context, udp::v4());
-        
-        // Endpoint для сервера, к которому мы будем отправлять данные. 
-        // Его IP-адрес будет запрашиваться у пользователя перед каждой отправкой сообщения.
-        udp::endpoint server_endpoint;
-        
-        // Инициализируем аудио рекордер для захвата звука с микрофона. Мы будем использовать формат ma_format_u8 и 1 канал (моно).
-        Recorder recorder(ma_format_u8, 1);
-        
-        while (true) {
-            std::string server_ip;
-            std::cout << "Enter server IP address: ";
-            std::getline(std::cin, server_ip);
-            
-            // Устанавливаем endpoint сервера
-            server_endpoint = udp::endpoint(net::ip::make_address(server_ip), port);
-            
-            std::cout << "Press Enter to record message..." << std::endl;
-            std::string dummy; // Переменная для хранения пустой строки, которая будет использоваться для ожидания нажатия Enter
-            std::getline(std::cin, dummy); // Ожидаем нажатия Enter
-            
-            // Записываем аудио. Метод Record возвращает структуру RecordingResult, 
-            // которая содержит вектор с данными и количество записанных фреймов.
-            auto rec_result = recorder.Record(65000, 1.5s);
-            std::cout << "Recording done, " << rec_result.frames << " frames recorded" << std::endl;
-            
-            // Вычисляем количество байт для отправки
-            size_t bytes_to_send = rec_result.frames * recorder.GetFrameSize();
-            
-            // Отправляем данные. Метод send_to принимает буфер с данными и endpoint сервера, 
-            // которому мы хотим отправить сообщение.
-            socket.send_to(net::buffer(rec_result.data.data(), bytes_to_send), server_endpoint);
-            
-            std::cout << "Sent " << bytes_to_send << " bytes to " << server_ip << std::endl;
-        }
+    Recorder recorder(ma_format_u8, 1);
+    std::string str; // Промежуточная строка для получения ввода от пользователя
+    std::cout << "Press Enter to record message..." << std::endl;
+    std::getline(std::cin, str);
+
+    // Производим запись в rec_result
+    auto rec_result = recorder.Record(max_n_frames, 1.5s);
+    std::cout << "Recording done" << std::endl;
+
+    int frame_size = recorder.GetFrameSize();
+    size_t n_frames = rec_result.frames;
+    size_t datagram_size = frame_size * n_frames;
+
+    if (datagram_size > max_buffer_size) {
+        std::cout << "Can't send datagram: size record" << datagram_size << " grater then max buffer size " << max_buffer_size << std::endl;
+        return;
     }
-    catch (std::exception& e) {
-        std::cerr << "Client exception: " << e.what() << std::endl;
+
+    // Отправляем данные на сервер
+    try {
+        net::io_context io_context;
+
+        // Перед отправкой данных нужно открыть сокет.
+        // При открытии указываем протокол (IPv4 или IPv6) вместо endpoint.
+        udp::socket socket(io_context, udp::v4());
+
+        boost::system::error_code ec;
+        auto endpoint = udp::endpoint(net::ip::make_address(server_IP, ec), port);
+        socket.send_to(net::buffer(rec_result.data, datagram_size), endpoint);
+    }
+    catch (std::exception &e) {
+        std::cerr << e.what() << std::endl;
     }
 }
 
-int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <client|server> <port>" << std::endl;
+int main(int argc, char **argv) {
+    // Проверка запуска
+    if (argc != 3)
+    {
+        PrintBadArgsMessage(argv[0]);
         return 1;
     }
+
+    std::string appType = std::string(argv[1]);
     
-    std::string mode = argv[1];
-    uint16_t port = std::stoi(argv[2]);
-    
-    if (mode == "server") {
-        StartServer(port);
-    } else if (mode == "client") {
+    if (appType != "server"sv && appType != "client"sv)
+    {
+        PrintBadArgsMessage(argv[0]);
+        return 1;
+    }
+
+    int port = -1;
+    try {
+        port = std::stoi(std::string(argv[2]));
+    }
+    catch (std::exception &e) {
+        std::cerr << e.what() << std::endl;
+        std::cout << "Bad input: " << argv[2] << " isn't port number" << std::endl;
+        return 1;
+    }
+
+    if (appType == "client"sv) { // Клиентская часть приложения
         StartClient(port);
-    } else {
-        std::cerr << "Invalid mode. Use 'client' or 'server'" << std::endl;
-        return 1;
     }
-    
+
+    if (appType == "server"sv) { // Серверная часть приложения
+        StartServer(port);
+    }
+
     return 0;
 }
