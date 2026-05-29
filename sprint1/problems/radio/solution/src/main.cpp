@@ -90,14 +90,15 @@ void StartClient(uint16_t port) {
         // Использую localhost для тестирования локально и чтобы не светить IP на GitHub
         //static const char server_IP[] = "localhost";
 
+        // Создаём io_context, который необходим для работы с сокетами (возможно, он понадобится для других операций, например, для асинхронных операций, если вы захотите их использовать). 
+        // Он же будет передаваться в конструктор сокета.
         net::io_context io_context;
 
         // Перед отправкой данных нужно открыть сокет.
         // При открытии указываем протокол (IPv4 или IPv6) вместо endpoint.
         udp::socket socket(io_context, udp::v4());
 
-        Recorder recorder(ma_format_u8, 1);
-        
+        Recorder recorder(ma_format_u8, 1); // Создаём объект Recorder для записи звука. Указываем формат семплов и количество каналов (моно).
 
         while (true)
         {
@@ -110,7 +111,7 @@ void StartClient(uint16_t port) {
             std::cout << "Press Enter to record message..." << std::endl;
             std::getline(std::cin, str);
 
-            // Производим запись в rec_result
+            // Производим запись в rec_result. В нём будет вектор с данными и количество фреймов, которые были записаны.
             auto rec_result = recorder.Record(max_n_frames, 1.5s);
             std::cout << "Recording done, " << rec_result.frames << " frames recorded" << std::endl;
 
