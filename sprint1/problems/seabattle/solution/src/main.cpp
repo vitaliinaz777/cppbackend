@@ -214,8 +214,8 @@ private:
 
         int p1 = sv[0] - 'A', p2 = sv[1] - '1';
 
-        if (p1 < 0 || p1 > 8) return std::nullopt;
-        if (p2 < 0 || p2 > 8) return std::nullopt;
+        if (p1 < 0 || p1 > 7) return std::nullopt;
+        if (p2 < 0 || p2 > 7) return std::nullopt;
 
         return {{p1, p2}};
     }
