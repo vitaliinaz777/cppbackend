@@ -59,6 +59,7 @@ namespace net = boost::asio;
 using net::ip::tcp;
 using namespace std::literals;
 
+// Функция для вывода двух игровых полей side by side
 void PrintFieldPair(const SeabattleField& left, const SeabattleField& right) {
     auto left_pad = "  "s;
     auto delimeter = "    "s;
@@ -81,39 +82,133 @@ void PrintFieldPair(const SeabattleField& left, const SeabattleField& right) {
     std::cout << std::endl;
 }
 
-template <size_t sz>
+// Функция для чтения из сокета ровно sz байт и возвращения их в виде строки. Если произошла ошибка, возвращается std::nullopt.
+template <size_t sz> // sz - это размер данных, которые мы хотим прочитать из сокета. В данном случае, это может быть 2 байта для координат выстрела или 1 байт для результата выстрела.
 static std::optional<std::string> ReadExact(tcp::socket& socket) {
-    boost::array<char, sz> buf;
-    boost::system::error_code ec;
+    boost::array<char, sz> buf; // Буфер для хранения прочитанных данных
+    boost::system::error_code ec; // Объект для хранения кода ошибки
 
+    // Чтение данных из сокета. Функция net::read блокируется, пока не будет прочитано ровно sz байт или не произойдёт ошибка.
+    // Результат операции сохраняется в ec. Если чтение прошло успешно, ec будет без ошибок, и функция вернёт строку,
+    // содержащую прочитанные данные. Если произошла ошибка, функция вернёт std::nullopt. 
     net::read(socket, net::buffer(buf), net::transfer_exactly(sz), ec);
-
     if (ec) {
         return std::nullopt;
     }
-
     return {{buf.data(), sz}};
 }
 
+// Функция для записи строки data в сокет. Если произошла ошибка, возвращается false. Если запись прошла успешно, возвращается true.
 static bool WriteExact(tcp::socket& socket, std::string_view data) {
     boost::system::error_code ec;
 
+    // Запись данных в сокет. Функция net::write блокируется, пока не будет записано всё содержимое строки data или не произойдёт ошибка. 
+    // Результат операции сохраняется в ec. Если запись прошла успешно, ec будет без ошибок, и функция вернёт true. 
+    // Если произошла ошибка, функция вернёт false.
     net::write(socket, net::buffer(data), net::transfer_exactly(data.size()), ec);
 
     return !ec;
 }
 
+// Класс SeabattleAgent реализует логику игры в морской бой. Он содержит методы для обработки ходов, отображения полей и определения окончания игры.
 class SeabattleAgent {
 public:
+    // Конструктор класса SeabattleAgent принимает игровое поле игрока с уже расставленными кораблями и сохраняет его в поле my_field_. 
+    // Поле other_field_ инициализируется по умолчанию, предполагая, что все клетки неизвестны (UNKNOWN).
     SeabattleAgent(const SeabattleField& field)
         : my_field_(field) {
     }
 
+    // Метод StartGame содержит всю логику игры. Он принимает сокет для общения с соперником и булев параметр my_initiative, 
+    // который определяет, чей сейчас ход: игрока или соперника.
     void StartGame(tcp::socket& socket, bool my_initiative) {
-        // TODO: реализуйте самостоятельно
+        // Игровой цикл
+        while(!IsGameEnded()) {
+            PrintFields(); // Вывод текущего состояния полей игрока и соперника
+
+            // Если у игрока есть инициатива (my_initiative == true), он делает ход. Иначе он ждёт хода соперника.
+            if (my_initiative)
+            {
+                std::cout << "Your turn: "s;
+
+                // Запрос хода у пользователя
+                std::string my_move;
+                std::cin >> my_move; // Ввод хода в формате, например, "B6"
+                auto shootCell = ParseMove(my_move); // Преобразование текстового представления клетки в координаты. Если введённая клетка некорректна, shootCell будет std::nullopt.
+                
+                if (!shootCell) {
+                    std::cout << "Bad move! Try Again."s << std::endl;
+                    continue;
+                }
+
+                // Отправляем выстрел
+                // Отправка координат выстрела сопернику. Если отправка не удалась, выводится сообщение об ошибке и цикл продолжается для повторного ввода хода.
+                SendMove(socket, *shootCell);
+
+                // Преобразование координат выстрела в текстовое представление для отображения. Например, координаты (1, 5) будут преобразованы в "B6".
+                std::pair<int,int> cell = {(*shootCell).second, (*shootCell).first};
+
+                // Получение результата
+                SeabattleField::ShotResult res = ReadResult(socket);
+
+                // Обработка результата
+                if (res == SeabattleField::ShotResult::MISS) {
+                    other_field_.MarkMiss(cell.first, cell.second); // Отметка промаха на поле соперника. Если результат выстрела - промах, мы отмечаем эту клетку на поле соперника как MISS и теряем право хода (my_initiative = false), передавая ход сопернику.
+                    my_initiative = false;  // Теряем право хода при промахе
+                    std::cout << "You MISS! Enemy's move."s << std::endl;
+                } else if (res == SeabattleField::ShotResult::KILL) {
+                    other_field_.MarkKill(cell.first, cell.second); // Отметка уничтожения на поле соперника. Если результат выстрела - уничтожение, мы отмечаем эту клетку на поле соперника как KILLED и сохраняем право хода (my_initiative = true), позволяя игроку продолжать ходить.
+                    std::cout << "You KILL! Your move."s << std::endl;
+                } else if (res == SeabattleField::ShotResult::HIT) {
+                    other_field_.MarkHit(cell.first, cell.second); // Отметка попадания на поле соперника. Если результат выстрела - попадание, мы отмечаем эту клетку на поле соперника как HIT и сохраняем право хода (my_initiative = true), позволяя игроку продолжать ходить.
+                    std::cout << "You HIT! Your move."s << std::endl;
+                }
+            }
+            else
+            {
+                std::cout << "Waiting for turn..."s << std::endl;
+
+                // Получение хода соперника
+                auto enemy_move = ReadMove(socket);
+
+                // Обработка хода с проверкой
+                if (enemy_move) {
+
+                    auto shoot_res_str = MoveToString(*enemy_move); // Преобразование координат хода соперника в текстовое представление для отображения. Например, координаты (1, 5) будут преобразованы в "B6".
+                    std::cout << "Shot to "s << shoot_res_str << std::endl;
+
+                    std::pair<int,int> cell = {(*enemy_move).second, (*enemy_move).first}; // Преобразование координат хода соперника в пару чисел для удобства обработки. Например, координаты (1, 5) будут преобразованы в (5, 1) для доступа к полю my_field_.
+                    auto shoot_res = my_field_.Shoot(cell.first, cell.second); // Обработка выстрела соперника. Метод Shoot класса SeabattleField принимает координаты выстрела и возвращает результат выстрела в виде перечисления ShotResult, которое может быть MISS, HIT или KILL. Этот результат будет использоваться для обновления состояния поля игрока и принятия решений о следующих ходах.
+
+                    // Обработка результата
+                    if (shoot_res == SeabattleField::ShotResult::MISS) {
+                        my_field_.MarkMiss(cell.first, cell.second); // Отметка промаха на поле игрока. Если результат выстрела соперника - промах, мы отмечаем эту клетку на поле игрока как MISS и получаем право хода (my_initiative = true), позволяя игроку продолжать ходить.
+                        my_initiative = true;  // Соперник промазал - получаем право хода при промахе
+                        std::cout << "Opponent MISS! Your move."s << std::endl;
+                    } else if (shoot_res == SeabattleField::ShotResult::KILL) {
+                        my_field_.MarkKill(cell.first, cell.second); // Отметка уничтожения на поле игрока. Если результат выстрела соперника - уничтожение, мы отмечаем эту клетку на поле игрока как KILLED и теряем право хода (my_initiative = false), передавая ход сопернику.
+                        std::cout << "Your ship is KILLED! Enemy's move."s << std::endl;
+                    } else if (shoot_res == SeabattleField::ShotResult::HIT) {
+                        my_field_.MarkHit(cell.first, cell.second); // Отметка попадания на поле игрока. Если результат выстрела соперника - попадание, мы отмечаем эту клетку на поле игрока как HIT и сохраняем право хода (my_initiative = false), передавая ход сопернику, так как соперник продолжает ходить после попадания.
+                        std::cout << "Your ship is HITED! Enemy's move."s << std::endl;
+                    }
+
+                    // Отсылка результата
+                    SendResult(socket, shoot_res);
+                }
+                else
+                {
+                    std::cout << "Bad answer from opponent. Connection closed!"s << std::endl;
+                    break;
+                }
+            }
+        }
     }
 
 private:
+    // Метод ParseMove преобразует текстовое представление клетки, состоящее из буквы и цифры (например, B6) в координаты. 
+    // Возвращает пару чисел, в которой первый элемент соответствует букве (значение от 0 до 7), а второй - цифре (также от 0 до 7). 
+    // В случае некорректной клетки возвращает std::nullopt.
     static std::optional<std::pair<int, int>> ParseMove(const std::string_view& sv) {
         if (sv.size() != 2) return std::nullopt;
 
@@ -125,40 +220,134 @@ private:
         return {{p1, p2}};
     }
 
+    // Метод MoveToString преобразует координаты в текстовое представление клетки. Он принимает пару чисел, 
+    // где первый элемент соответствует букве (значение от 0 до 7), а второй - цифре (также от 0 до 7), 
+    // и возвращает строку, состоящую из буквы и цифры, например, "B6".
     static std::string MoveToString(std::pair<int, int> move) {
         char buff[] = {static_cast<char>(move.first) + 'A', static_cast<char>(move.second) + '1'};
         return {buff, 2};
     }
 
+    // Метод PrintFields выводит в cout два поля: игрока и соперника. Он использует функцию PrintFieldPair для отображения полей side by side.
     void PrintFields() const {
         PrintFieldPair(my_field_, other_field_);
     }
 
+    // Метод IsGameEnded возвращает true, если игра завершена. Игра считается завершённой, если все корабли на поле игрока или соперника уничтожены,
+     // то есть если метод IsLoser возвращает true для одного из полей.
     bool IsGameEnded() const {
         return my_field_.IsLoser() || other_field_.IsLoser();
     }
 
     // TODO: добавьте методы по вашему желанию
 
+    // Получение хода от соперника
+    std::optional<std::pair<int, int>> ReadMove(tcp::socket& socket) {
+        auto enemy_move_str = ReadExact<2>(socket);
+        return ParseMove(*enemy_move_str);
+    }
+
+    // Получение информации о результате своего выстрела от соперника
+    SeabattleField::ShotResult ReadResult(tcp::socket& socket) {
+        auto enemy_res_str = ReadExact<1>(socket); // Читаем 1 байт, который содержит результат выстрела соперника. Если чтение не удалось, можно добавить обработку ошибки, например, вывести сообщение об ошибке или завершить игру.
+        SeabattleField::ShotResult enemy_res = static_cast<SeabattleField::ShotResult>((*enemy_res_str)[0]); // Преобразуем полученный байт в тип SeabattleField::ShotResult. Это делается с помощью static_cast, который позволяет безопасно преобразовать тип char в тип ShotResult. Если преобразование прошло успешно, возвращаем результат выстрела соперника. Если произошла ошибка при чтении, можно добавить обработку ошибки, например, вывести сообщение об ошибке или завершить игру.
+        return enemy_res; // Возвращаем результат выстрела соперника. Этот результат будет использоваться для обновления состояния поля соперника и принятия решений о следующих ходах.
+    }
+
+    // Отсылка собственного хода сопернику
+    void SendMove(tcp::socket& socket, std::pair<int,int>& coord) {
+        auto move_str = MoveToString(coord); // Преобразуем координаты в строку
+        std::string_view move_view(move_str.c_str(),2); // Создаём строковый представление для отправки. Используем c_str() для получения указателя на строку и указываем размер 2, так как координаты всегда будут состоять из 2 символов.
+        WriteExact(socket, move_view); // Отправляем строку с координатами сопернику. Если отправка не удалась, можно добавить обработку ошибки, например, вывести сообщение об ошибке или попытаться повторить отправку.
+    }
+
+    // Отсылка своей информации о результате выстрела соперника
+    void SendResult(tcp::socket& socket, SeabattleField::ShotResult shot_res) {
+        char shot = static_cast<char>(shot_res); // Преобразуем результат выстрела в тип char для отправки. Это делается с помощью static_cast, который позволяет безопасно преобразовать тип ShotResult в тип char. Если преобразование прошло успешно, создаём строковый представление для отправки. Если произошла ошибка при преобразовании, можно добавить обработку ошибки, например, вывести сообщение об ошибке или завершить игру.
+        std::string_view move_view(&shot,1); // Создаём строковый представление для отправки. Используем указатель на переменную shot и указываем размер 1, так как результат выстрела будет представлен одним байтом.
+        WriteExact(socket, move_view); // Отправляем строку с результатом выстрела сопернику. Если отправка не удалась, можно добавить обработку ошибки, например, вывести сообщение об ошибке или попытаться повторить отправку.
+    }
+
 private:
-    SeabattleField my_field_;
+    // Поле игрока, содержащее расположение его кораблей и статус каждой клетки. 
+    // Это поле используется для обработки выстрелов соперника и отображения состояния кораблей игрока.
+    SeabattleField my_field_; 
+    
+    // Поле соперника, содержащее информацию о том, какие клетки были открыты и какой результат был получен при выстреле по ним.
+    // Это поле используется для отображения состояния соперника и принятия решений о следующих ходах.
     SeabattleField other_field_;
 };
 
+// Функция StartServer запускает сервер, который ожидает подключения клиента и начинает игру. 
+// Она принимает игровое поле для сервера и порт для прослушивания входящих соединений. 
+// Она создаёт экземпляр класса SeabattleAgent с заданным полем, настраивает сокет для прослушивания входящих соединений и,
+// при успешном подключении клиента, вызывает метод StartGame для начала игры. 
+// Если при настройке сокета или приёмке подключения возникает ошибка, функция выводит соответствующее сообщение и завершает работу.
 void StartServer(const SeabattleField& field, unsigned short port) {
     SeabattleAgent agent(field);
 
     // TODO: реализуйте самостоятельно
 
+    // Создадим объект io_context, который необходим для работы с сокетами. Он обеспечивает выполнение асинхронных операций ввода-вывода.
+    net::io_context io_context;
+
+    // Создадим объект acceptor, который будет слушать входящие соединения на указанном порту. 
+    // Он использует протокол TCP и привязывается к адресу IPv4. Если при создании acceptor возникает ошибка, выводится сообщение об ошибке и функция завершается. 
+    tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), port));
+    std::cout << "Waiting for connection..."sv << std::endl;
+
+    boost::system::error_code ec;
+    
+    // Создадим объект socket, который будет использоваться для общения с клиентом.
+    tcp::socket socket{io_context};
+    
+    // Ожидаем подключения клиента. Функция accept блокируется, пока не будет принято входящее соединение или не произойдёт ошибка. 
+    // Результат операции сохраняется в ec. Если приёмка подключения прошла успешно, ec будет без ошибок, и функция продолжит выполнение. 
+    // Если произошла ошибка, функция выведет сообщение об ошибке и завершится. 
+    acceptor.accept(socket, ec);
+    if (ec) {
+        std::cout << "Can't accept connection"sv << std::endl;
+        return;
+    }
+
+    // Если подключение успешно, выводим сообщение и запускаем игру, передавая сокет и указывая, что сервер не имеет инициативы (my_initiative = false).
     agent.StartGame(socket, false);
 };
 
+// Функция StartClient запускает клиент, который подключается к серверу и начинает игру. 
+// Она принимает игровое поле для клиента, IP-адрес сервера и порт для подключения.
+// Она создаёт экземпляр класса SeabattleAgent с заданным полем, настраивает сокет для подключения к серверу и, 
+// при успешном подключении, вызывает метод StartGame для начала игры. 
 void StartClient(const SeabattleField& field, const std::string& ip_str, unsigned short port) {
     SeabattleAgent agent(field);
 
     // TODO: реализуйте самостоятельно
 
+    // Создадим endpoint - объект с информацией об адресе и порте.
+    // Для разбора IP-адреса пользуемся функцией net::ip::make_address.
+    boost::system::error_code ec;
+    auto endpoint = tcp::endpoint(net::ip::make_address(ip_str, ec), port);
 
+    if (ec) {
+        std::cout << "Wrong IP format"sv << std::endl;
+        return;
+    }
+
+    // Создадим объект io_context, который необходим для работы с сокетами. Он обеспечивает выполнение асинхронных операций ввода-вывода.
+    net::io_context io_context;
+    
+    // Создадим объект socket, который будет использоваться для общения с сервером.
+    tcp::socket socket{io_context};
+    
+    // Попытаемся подключиться к серверу. Функция connect блокируется, пока не будет установлено соединение или не произойдёт ошибка.
+    socket.connect(endpoint, ec);
+    if (ec)
+    {
+        std::cout << "Can't connect to server"sv << std::endl;
+        return;
+    }
+
+    // Если подключение успешно, выводим сообщение и запускаем игру, передавая сокет и указывая, что клиент имеет инициативу (my_initiative = true).
     agent.StartGame(socket, true);
 };
 
@@ -168,6 +357,7 @@ int main(int argc, const char** argv) {
         return 1;
     }
 
+    // Инициализируем генератор случайных чисел с помощью переданного сида и создаём игровое поле для игрока.
     std::mt19937 engine(std::stoi(argv[1]));
     SeabattleField fieldL = SeabattleField::GetRandomField(engine);
 
