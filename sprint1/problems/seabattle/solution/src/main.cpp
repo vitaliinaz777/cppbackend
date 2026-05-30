@@ -293,7 +293,7 @@ void StartServer(const SeabattleField& field, unsigned short port) {
 
     // Создадим объект acceptor, который будет слушать входящие соединения на указанном порту. 
     // Он использует протокол TCP и привязывается к адресу IPv4. Если при создании acceptor возникает ошибка, выводится сообщение об ошибке и функция завершается. 
-    tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), port));
+    tcp::acceptor acceptor(io_context, tcp::endpoint(tcp::v4(), port)); // socket + bind + listen в ядре
     std::cout << "Waiting for connection..."sv << std::endl;
 
     boost::system::error_code ec;
@@ -304,7 +304,7 @@ void StartServer(const SeabattleField& field, unsigned short port) {
     // Ожидаем подключения клиента. Функция accept блокируется, пока не будет принято входящее соединение или не произойдёт ошибка. 
     // Результат операции сохраняется в ec. Если приёмка подключения прошла успешно, ec будет без ошибок, и функция продолжит выполнение. 
     // Если произошла ошибка, функция выведет сообщение об ошибке и завершится. 
-    acceptor.accept(socket, ec);
+    acceptor.accept(socket, ec); // accept → наполняет socket в ядре и возвращает управление, когда кто-то подключился. Если приёмка подключения прошла успешно, socket будет готов для общения с клиентом.
     if (ec) {
         std::cout << "Can't accept connection"sv << std::endl;
         return;
@@ -341,6 +341,8 @@ void StartClient(const SeabattleField& field, const std::string& ip_str, unsigne
     
     // Попытаемся подключиться к серверу. Функция connect блокируется, пока не будет установлено соединение или не произойдёт ошибка.
     socket.connect(endpoint, ec);
+    // Результат операции сохраняется в ec. Если подключение прошло успешно, ec будет без ошибок, и функция продолжит выполнение. 
+    // Если произошла ошибка, функция выведет сообщение об ошибке и завершится.
     if (ec)
     {
         std::cout << "Can't connect to server"sv << std::endl;
